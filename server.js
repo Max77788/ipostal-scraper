@@ -1,139 +1,181 @@
 import express from "express";
+import archiver from "archiver";
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import dotenv from "dotenv";
 
 dotenv.config();
+
 puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-const USERNAME = process.env.USERNAME;
-const PASSWORD = process.env.PASSWORD;
+const USERNAME = process.env.USERNAME_APP;
+const PASSWORD = process.env.PASSWORD_APP;
 const LOGIN_URL = "https://my.ipostal1.com/login";
-const MAX_RETRIES = 5;
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
+if (!USERNAME || !PASSWORD) {
+  throw new Error("Missing USERNAME or PASSWORD env vars");
 }
 
-async function slowType(page, selector, text) {
-  await page.focus(selector);
+/* ---------- UTILS ---------- */
 
-  for (const char of text) {
-    await page.keyboard.type(char);
-    await sleep(60 + Math.random() * 140);
-  }
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+function getTodayString() {
+  const d = new Date();
+  const day = String(d.getDate()).padStart(2, "0");
+
+  const months = [
+    "Jan","Feb","Mar","Apr","May","Jun",
+    "Jul","Aug","Sep","Oct","Nov","Dec"
+  ];
+
+  return "17-Mar-2026";
+  //return `${day}-${months[d.getMonth()]}-${d.getFullYear()}`;
 }
 
-async function scrapeMailbox() {
+async function typeLikeHuman(page, selector, text) {
+  await page.waitForSelector(selector, { visible: true });
 
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-blink-features=AutomationControlled"
-    ]
+  const input = await page.$(selector);
+
+  await input.click({ clickCount: 3 });
+  await page.keyboard.press("Backspace");
+
+  await sleep(400);
+
+  await page.type(selector, String(text), {
+    delay: 80 + Math.random() * 120
   });
 
-  const page = await browser.newPage();
+  await page.evaluate((selector) => {
+    const el = document.querySelector(selector);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }, selector);
+}
 
-  await page.setUserAgent(
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-  );
+/* ---------- CORE SCRAPER ---------- */
 
-  await page.setViewport({ width: 1366, height: 768 });
-
-  await page.setExtraHTTPHeaders({
-    "accept-language": "en-US,en;q=0.9"
-  });
+async function scrapeMailbox(page, archive) {
 
   await page.goto(LOGIN_URL, { waitUntil: "networkidle2" });
 
-  let loggedIn = false;
+  await typeLikeHuman(page, "#username", USERNAME);
+  await typeLikeHuman(page, "#password", PASSWORD);
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+  await page.click("#login_btn");
 
-    const usernameField = await page.$("#username");
-
-    if (!usernameField) {
-      loggedIn = true;
-      break;
-    }
-
-    await page.click("#username", { clickCount: 3 });
-    await page.keyboard.press("Backspace");
-    await slowType(page, "#username", USERNAME);
-
-    await page.click("#password", { clickCount: 3 });
-    await page.keyboard.press("Backspace");
-    await slowType(page, "#password", PASSWORD);
-
-    await page.click("#login_btn");
-
-    try {
-      await page.waitForSelector("article.mail-item-card", { timeout: 10000 });
-      loggedIn = true;
-      break;
-    } catch {
-      await sleep(3000);
-    }
-  }
-
-  if (!loggedIn) {
-    await browser.close();
-    throw new Error("Login failed");
-  }
-
-  await page.waitForSelector("article.mail-item-card");
-
-  const items = await page.evaluate(() => {
-    return [...document.querySelectorAll("article.mail-item-card")]
-      .map(el => ({
-        id: el.id,
-        type: el.querySelector(".item_type_name")?.innerText,
-        received: el.querySelector(".received-date")?.innerText,
-        expires: el.querySelector(".storage-expiry-date")?.innerText,
-        image: el.querySelector("img.item-img")?.src
-      }));
+  await page.waitForSelector("article.mail-item-card", {
+    timeout: 120000
   });
 
-  await browser.close();
+  console.log("Mailbox loaded");
 
-  return items;
+  const today = getTodayString();
+
+  const cards = await page.$$("article.mail-item-card");
+
+  for (const card of cards) {
+
+    const received = await card.$eval(
+      ".received-date",
+      el => el.innerText.trim()
+    ).catch(() => null);
+
+    if (!received || !received.includes(today)) continue;
+
+    const id = await page.evaluate(el => el.id, card);
+
+    const src = await card.$eval(
+      "img.item-img",
+      el => el.src
+    ).catch(() => null);
+
+    if (!src) continue;
+
+    try {
+      // 🔥 fetch INSIDE browser to keep session (fixes 403)
+      const bufferArray = await page.evaluate(async (url) => {
+        const res = await fetch(url, {
+          credentials: "include"
+        });
+
+        if (!res.ok) {
+          throw new Error("Fetch failed: " + res.status);
+        }
+
+        const blob = await res.blob();
+        const arrayBuffer = await blob.arrayBuffer();
+
+        return Array.from(new Uint8Array(arrayBuffer));
+      }, src);
+
+      const buffer = Buffer.from(bufferArray);
+
+      archive.append(buffer, { name: `${id}.jpg` });
+
+      console.log("Downloaded:", id);
+
+    } catch (err) {
+      console.log("Failed:", id, err.message);
+    }
+  }
 }
+
+/* ---------- API ROUTE ---------- */
 
 app.get("/mailbox", async (req, res) => {
 
+  let browser;
+
   try {
 
-    const items = await scrapeMailbox();
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=mailbox_today.zip"
+    );
 
-    res.json({
-      success: true,
-      items
+    const archive = archiver("zip", { zlib: { level: 9 } });
+    archive.pipe(res);
+
+    browser = await puppeteer.launch({
+      headless: false,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage"
+      ]
     });
+
+    const page = await browser.newPage();
+
+    await page.setViewport({ width: 1366, height: 768 });
+
+    await scrapeMailbox(page, archive);
+
+    await archive.finalize();
 
   } catch (err) {
 
     console.error(err);
 
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
+    if (!res.headersSent) {
+      res.status(500).send(err.toString());
+    }
 
+  } finally {
+
+    if (browser) await browser.close();
   }
 
 });
 
-app.get("/", (req, res) => {
-  res.send("iPostal scraper running");
-});
+/* ---------- START SERVER ---------- */
 
-app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("Server running on port", PORT);
 });

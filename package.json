@@ -4,11 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "stage": "node index_STAGING.js"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "archiver": "^7.0.1",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "puppeteer": "^24.39.1",
