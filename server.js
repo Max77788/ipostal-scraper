@@ -143,7 +143,7 @@ app.get("/mailbox", async (req, res) => {
     archive.pipe(res);
 
     browser = await puppeteer.launch({
-      headless: false,
+      headless: true,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
