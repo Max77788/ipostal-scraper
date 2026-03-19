@@ -32,8 +32,8 @@ function getTodayString() {
     "Jul","Aug","Sep","Oct","Nov","Dec"
   ];
 
-  return "17-Mar-2026";
-  //return `${day}-${months[d.getMonth()]}-${d.getFullYear()}`;
+  // return "17-Mar-2026";
+  return `${day}-${months[d.getMonth()]}-${d.getFullYear()}`;
 }
 
 async function typeLikeHuman(page, selector, text) {
