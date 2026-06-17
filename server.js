@@ -162,14 +162,18 @@ app.get("/mailbox", async (req, res) => {
     const archive = archiver("zip", { zlib: { level: 9 } });
     archive.pipe(res);
 
+    const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH
+      || "/mnt/HC_Volume_105739285/playwright/chromium-1223/chrome-linux/chrome";
+
     browser = await puppeteer.launch({
       headless: "new",
-      executablePath: "/mnt/HC_Volume_105739285/playwright/chromium-1223/chrome-linux/chrome",
+      executablePath: chromePath,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-blink-features=AutomationControlled"
+        "--disable-blink-features=AutomationControlled",
+        "--disable-gpu"
       ]
     });
 
