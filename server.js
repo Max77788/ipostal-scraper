@@ -61,7 +61,18 @@ async function typeLikeHuman(page, selector, text) {
 
 async function scrapeMailbox(page, archive) {
 
-  await page.goto(LOGIN_URL, { waitUntil: "networkidle2" });
+  await page.goto(LOGIN_URL, { waitUntil: "networkidle2", timeout: 60000 });
+
+  // Cloudflare challenge — wait for it to resolve before looking for #username
+  await page.waitForFunction(() => {
+    const title = document.querySelector("title");
+    return title && !title.textContent.includes("Just a moment");
+  }, { timeout: 30000 }).catch(() => {
+    console.log("Cloudflare check timed out, proceeding anyway");
+  });
+
+  // Extra safety: wait for any form field to appear (page fully mounted)
+  await page.waitForSelector("input", { timeout: 15000 }).catch(() => {});
 
   await typeLikeHuman(page, "#username", USERNAME);
   await typeLikeHuman(page, "#password", PASSWORD);
