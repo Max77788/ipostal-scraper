@@ -61,7 +61,8 @@ async function typeLikeHuman(page, selector, text) {
 
 async function scrapeMailbox(page, archive) {
 
-  await page.goto(LOGIN_URL, { waitUntil: "networkidle2", timeout: 60000 });
+  // Use domcontentloaded -- networkidle2 never fires behind Cloudflare
+  await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded", timeout: 30000 });
 
   // Cloudflare challenge — wait for it to resolve before looking for #username
   await page.waitForFunction(() => {
@@ -79,15 +80,23 @@ async function scrapeMailbox(page, archive) {
 
   await page.click("#login_btn");
 
-  await page.waitForSelector("article.mail-item-card", {
-    timeout: 120000
-  });
+  // Wait for navigation from my.ipostal1.com/login to portal.ipostal1.com
+  await page.waitForFunction(() => {
+    return window.location.hostname.includes("portal.ipostal1.com");
+  }, { timeout: 30000 });
 
-  console.log("Mailbox loaded");
+  console.log("Mailbox loaded —", page.url());
+
+  // Check if any mail-item cards exist (inbox might be empty)
+  const cards = await page.$$("article.mail-item-card");
+
+  if (cards.length === 0) {
+    console.log("No mail items in inbox — returning empty ZIP");
+    archive.append("No mail items found for today.", { name: "empty.txt" });
+    return;
+  }
 
   const today = getTodayString();
-
-  const cards = await page.$$("article.mail-item-card");
 
   for (const card of cards) {
 
@@ -154,11 +163,13 @@ app.get("/mailbox", async (req, res) => {
     archive.pipe(res);
 
     browser = await puppeteer.launch({
-      headless: true,
+      headless: "new",
+      executablePath: "/mnt/HC_Volume_105739285/playwright/chromium-1223/chrome-linux/chrome",
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage"
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled"
       ]
     });
 
